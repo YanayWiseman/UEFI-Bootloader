@@ -2,6 +2,8 @@
 #include <efilib.h>
 
 void uint64ToChar16(UINT64 integer, CHAR16* buffer);
+void Fail(EFI_SYSTEM_TABLE* SystemTable, CHAR16* Message);
+void Halt(void);
 
 /*
     Main function for the UEFI Bootloader, defined as efi_main to invoke the entry point specidief by the EFI executable.
@@ -22,6 +24,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable
     // Initialize the UEFI libraries using the parameters
     InitializeLib(ImageHandle, SystemTable);
 
+    // Clear the screen and display the bootloader banner.
     uefi_call_wrapper(SystemTable->ConOut->ClearScreen, 1, SystemTable->ConOut);
     uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, L"Hello From NYOS!\r\n");
 
@@ -32,12 +35,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable
     EFI_STATUS Status = uefi_call_wrapper(SystemTable->BootServices->HandleProtocol, 3, ImageHandle, &LoadedImageProtocol, (VOID**)&loadedImage);
     if(EFI_ERROR(Status))
     {
-        uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, L"Failed to get loaded image protocol\r\n");
-
-        while(1)
-        {
-            __asm__ __volatile__("hlt");
-        }
+        Fail(SystemTable, L"Failed to get loaded image protocol!\r\n");
     }
     // Now loadedImage points to the protocol interface
 
@@ -55,12 +53,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable
     Status = uefi_call_wrapper(SystemTable->BootServices->HandleProtocol, 3, loadedImage->DeviceHandle, &FileSystemProtocol, (VOID**)&FileSystem);
     if(EFI_ERROR(Status))
     {
-        uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, L"Failed to get File System protocol!\r\n");
-
-        while(1)
-        {
-            __asm__ __volatile__("hlt");
-        }
+        Fail(SystemTable, L"Failed to get File System protocol!\r\n");
     }
 
     // Open the root directory
@@ -68,12 +61,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable
     Status = uefi_call_wrapper(FileSystem->OpenVolume, 2, FileSystem, &Root);
     if(EFI_ERROR(Status))
     {
-        uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, L"Failed to open Filesystem volume!\r\n");
-
-        while(1)
-        {
-            __asm__ __volatile__("hlt");
-        }
+        Fail(SystemTable, L"Failed to open Filesystem volume!\r\n");
     }
     
     uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, L"\nSuccessfully opened filesystem!\r\n");
@@ -83,12 +71,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable
     Status = uefi_call_wrapper(Root->Open, 5, Root, &KernelFile, L"kernel.elf", EFI_FILE_MODE_READ, 0);
     if (EFI_ERROR(Status))
     {
-        uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, L"Failed to open kernel.elf!\r\n");
-
-        while (1)
-        {
-            __asm__ __volatile__("hlt");
-        }
+        Fail(SystemTable, L"Failed to open kernel.elf!\r\n");
     }
     uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, L"\nSuccessfully opened kernel.elf!\r\n");
 
@@ -103,12 +86,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable
     Status = uefi_call_wrapper(KernelFile->GetInfo, 4, KernelFile, &FileInfoGuid, &FileInfoSize, NULL);
     if(Status != EFI_BUFFER_TOO_SMALL)
     {
-        uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, L"Failed to determine file info buffer!\r\n");
-
-        while (1)
-        {
-            __asm__ __volatile__("hlt");
-        }
+        Fail(SystemTable, L"Failed to determine file info buffer!\r\n");
     }
 
     // FileInfoSize contains the size to allocate, we will use AllocatePool() from the boot services
@@ -116,24 +94,14 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable
     Status = uefi_call_wrapper(SystemTable->BootServices->AllocatePool, 3, EfiLoaderData, FileInfoSize, (VOID**)&FileInfo);
     if (EFI_ERROR(Status))
     {
-        uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, L"Failed to allocate file into buffer\r\n");
-
-        while (1)
-        {
-            __asm__ __volatile__("hlt");
-        }
+        Fail(SystemTable, L"Failed to allocate file into buffer\r\n");
     }
 
     // Now we can get the info
     Status = uefi_call_wrapper(KernelFile->GetInfo, 4, KernelFile, &FileInfoGuid, &FileInfoSize, FileInfo);
     if (EFI_ERROR(Status))
     {
-        uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, L"Failed to retrieve file information!\r\n");
-
-        while (1)
-        {
-            __asm__ __volatile__("hlt");
-        }
+        Fail(SystemTable, L"Failed to retrieve file information!\r\n");
     }
     // Retrieve the size
     UINT64 KernelSize = FileInfo->FileSize;
@@ -155,12 +123,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable
     Status = uefi_call_wrapper(SystemTable->BootServices->AllocatePool, 3, EfiLoaderData, (UINTN)KernelSize, &KernelBuffer);
     if (EFI_ERROR(Status))
     {
-        uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, L"Failed to allocate kernel buffer!\r\n");
-
-        while (1)
-        {
-            __asm__ __volatile__("hlt");
-        }
+        Fail(SystemTable, L"Failed to allocate kernel buffer!\r\n");
     }
 
     // Read the kernel.elf file into the allocated buffer
@@ -168,24 +131,13 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable
     Status = uefi_call_wrapper(KernelFile->Read, 3, KernelFile, &ReadSize, KernelBuffer);
     if (EFI_ERROR(Status) || ReadSize != KernelSize)
     {
-        uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, L"Failed to read complete kernel!\r\n");
-
-        while (1)
-        {
-            __asm__ __volatile__("hlt");
-        }
+        Fail(SystemTable, L"Failed to read complete kernel!\r\n");
     }
 
     // Verify that the loaded file has the ELF's signature
-    UINT8* KernelBytes = (UINT8*)KernelBuffer;
-    if(KernelBytes[0] != 0x7F || KernelBytes[1] != 'E'  || KernelBytes[2] != 'L'  ||KernelBytes[3] != 'F')
+    if(!IsExlf(KernelBuffer, KernelSize))
     {
-        uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, L"Invalid ELF file!\r\n");
-
-        while (1)
-        {
-            __asm__ __volatile__("hlt");
-        }
+        Fail(SystemTable, L"Invalid ELF file!\r\n");
     }
     uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, L"\nSuccessfully loaded kernel.elf!\r\n");
 
@@ -196,6 +148,52 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable
     }
 
     return EFI_SUCCESS;
+}
+
+/*
+    Function stops the processor from executing further instructions
+    Uses HLT to halt the CPU, then loops in case execution resumes
+    Input: no input values
+    Output: No return values
+*/
+void Halt(void)
+{
+    while (1)
+    {
+        __asm__ __volatile__("hlt");
+    }
+}
+
+
+/*
+    Function displays an error message and stop execution
+    Input: SystemTable is used to access the console and is Message the error message to display
+    Output: No return values
+*/
+
+void Fail(EFI_SYSTEM_TABLE* SystemTable, CHAR16* Message)
+{
+    uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, Message);
+    Halt();
+}
+
+/*
+    Function check whether a memory buffer begins with the ELF magic signature
+    Input: The buffer is the memory containing the file and BufferSize is the size of the buffer in bytes
+    Output: TRUE if the ELF signature is valid, otherwise FALSE.
+*/
+
+BOOLEAN IsElf(VOID* Buffer, UINT64 BufferSize)
+{
+    // Ensure that the buffer is large enough to contain the signature.
+    if (BufferSize < 4)
+    {
+        return FALSE;
+    }
+
+    UINT8* Bytes = (UINT8*)Buffer;
+
+    return (Bytes[0] == 0x7F && Bytes[1] == 'E'  && Bytes[2] == 'L'  && Bytes[3] == 'F');
 }
 
 /*

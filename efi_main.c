@@ -1,6 +1,8 @@
 #include <efi.h>
 #include <efilib.h>
 
+void uint64ToChar16(UINT64 integer, CHAR16* buffer);
+
 /*
     Main function for the UEFI Bootloader, defined as efi_main to invoke the entry point specidief by the EFI executable.
     EFI_HANDLE is the ID of the UEFI executable, SystemTable points to EFI_SYSTEM_TABLE which is a struct containing a lot
@@ -23,9 +25,97 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable
     uefi_call_wrapper(SystemTable->ConOut->ClearScreen, 1, SystemTable->ConOut);
     uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, L"Hello From NYOS!\r\n");
 
-    while (1)  // see the output
+    // Retrieve the loaded image protocol interface
+    EFI_GUID LoadedImageProtocol = EFI_LOADED_IMAGE_PROTOCOL_GUID;
+    EFI_LOADED_IMAGE_PROTOCOL* loadedImage = NULL;
+
+    EFI_STATUS Status = uefi_call_wrapper(SystemTable->BootServices->HandleProtocol, 3, ImageHandle, &LoadedImageProtocol, (VOID**)&loadedImage);
+    if(EFI_ERROR(Status))
+    {
+        uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, L"Failed to get loaded image protocol\r\n");
+
+        while(1)
+        {
+            __asm__ __volatile__("hlt");
+        }
+    }
+    // Now loadedImage points to the protocol interface
+
+    CHAR16 imageSizeString[21];
+
+    // Get the image size as an integer
+    uint64ToChar16(loadedImage->ImageSize, imageSizeString);
+    uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, L"Image size: ");
+    uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, imageSizeString);
+
+    // Get the fs interface
+    EFI_GUID FileSystemProtocol = EFI_SIMPLE_FILE_SYSTEM_PROTOCOL_GUID;
+    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL* FileSystem = NULL;
+
+    Status = uefi_call_wrapper(SystemTable->BootServices->HandleProtocol, 3, loadedImage->DeviceHandle, &FileSystemProtocol, (VOID**)&FileSystem);
+    if(EFI_ERROR(Status))
+    {
+        uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, L"Failed to get File System protocol!\r\n");
+
+        while(1)
+        {
+            __asm__ __volatile__("hlt");
+        }
+    }
+
+    // Open the root directory
+    EFI_FILE_HANDLE Root = NULL;
+    Status = uefi_call_wrapper(FileSystem->OpenVolume, 2, FileSystem, &Root);
+    if(EFI_ERROR(Status))
+    {
+        uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, L"Failed to open Filesystem volume!\r\n");
+
+        while(1)
+        {
+            __asm__ __volatile__("hlt");
+        }
+    }
+    
+    uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, L"\nSuccessfully opened filesystem!\r\n");
+
+    // waitttt
+    while (1)
     {
         __asm__ __volatile__("hlt");
     }
+
     return EFI_SUCCESS;
+}
+
+/*
+    Helper function to convert UINT64 to CHAR16
+    input: the UINT64 integer
+    output: the CHAR16 buffer
+*/
+
+void uint64ToChar16(UINT64 integer, CHAR16* buffer)
+{
+    CHAR16 temp[20];
+    int i = 0;
+
+    if (integer == 0)
+    {
+        buffer[0] = L'0';
+        buffer[1] = L'\0';
+        return;
+    }
+
+    while(integer > 0)
+    {
+        temp[i++] = L'0' + integer % 10;
+        integer /= 10;
+    }
+
+    // Reverse the reversed string
+    int j = 0;
+    while(i > 0)
+    {
+        buffer[j++] = temp[--i];
+    }
+    buffer[j] = L'\0';
 }

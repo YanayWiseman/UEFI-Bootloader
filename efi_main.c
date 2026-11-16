@@ -1,9 +1,11 @@
 #include <efi.h>
 #include <efilib.h>
+#include <elf.h>
 
 void uint64ToChar16(UINT64 integer, CHAR16* buffer);
 void Fail(EFI_SYSTEM_TABLE* SystemTable, CHAR16* Message);
 void Halt(void);
+BOOLEAN IsElf(VOID* Buffer, UINT64 BufferSize);
 
 /*
     Main function for the UEFI Bootloader, defined as efi_main to invoke the entry point specidief by the EFI executable.
@@ -135,11 +137,68 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable
     }
 
     // Verify that the loaded file has the ELF's signature
-    if(!IsExlf(KernelBuffer, KernelSize))
+    if(!IsElf(KernelBuffer, KernelSize))
     {
         Fail(SystemTable, L"Invalid ELF file!\r\n");
     }
     uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, L"\nSuccessfully loaded kernel.elf!\r\n");
+
+    // Ensure that the file is large enough to contain a elf header
+    if(KernelSize < sizeof(Elf64_Ehdr))
+    {
+        Fail(SystemTable, L"ELF file is too small!\r\n");
+    }
+
+    Elf64_Ehdr* ElfHeader = (Elf64_Ehdr*)KernelBuffer;
+    
+    // Verify that it is a 64bit elf file
+    if(ElfHeader->e_ident[EI_CLASS] != ELFCLASS64)
+    {
+        Fail(SystemTable, L"ELF file is not 64-bit!\r\n");
+    }
+
+    // Verify that the elf uses little endian encoding
+    if(ElfHeader->e_ident[EI_DATA] != ELFDATA2LSB)
+    {
+        Fail(SystemTable, L"Unsupported ELF byte order!\r\n");
+    }
+
+    // Verify the target architecture
+    if(ElfHeader->e_machine != EM_X86_64)
+    {
+        Fail(SystemTable, L"ELF architecture is not x86-64!\r\n");
+    }
+
+    // Verify that the elf is exec type
+    if(ElfHeader->e_type != ET_EXEC)
+    {
+        Fail(SystemTable, L"ELF file is not an executable!\r\n");
+    }
+    CHAR16 EntryPointString[21];
+    CHAR16 ProgramHeaderOffsetString[21];
+    CHAR16 ProgramHeaderCountString[21];
+
+    uint64ToChar16(ElfHeader->e_entry, EntryPointString);
+    uint64ToChar16(ElfHeader->e_phoff, ProgramHeaderOffsetString);
+    uint64ToChar16(ElfHeader->e_phnum, ProgramHeaderCountString);
+
+    uefi_call_wrapper(
+        SystemTable->ConOut->OutputString,
+        2,
+        SystemTable->ConOut,
+        L"ELF header parsed successfully!\r\n"
+    );
+
+    uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, L"Entry point: ");
+    uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, EntryPointString);
+
+    uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, L"\r\nProgram header offset: ");
+    uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, ProgramHeaderOffsetString);
+
+    uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, L"\r\nProgram header count: ");
+    uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, ProgramHeaderCountString);
+
+    uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, L"\r\n");
 
     // waitttt
     while (1)

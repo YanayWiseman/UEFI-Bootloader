@@ -150,6 +150,44 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable
     // Free allocated memory
     uefi_call_wrapper(SystemTable->BootServices->FreePool, 1, FileInfo);
 
+    // Allocate enough memory to hold the entire kernel.elf file
+    VOID* KernelBuffer = NULL;
+    Status = uefi_call_wrapper(SystemTable->BootServices->AllocatePool, 3, EfiLoaderData, (UINTN)KernelSize, &KernelBuffer);
+    if (EFI_ERROR(Status))
+    {
+        uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, L"Failed to allocate kernel buffer!\r\n");
+
+        while (1)
+        {
+            __asm__ __volatile__("hlt");
+        }
+    }
+
+    // Read the kernel.elf file into the allocated buffer
+    UINTN ReadSize = (UINTN)KernelSize;
+    Status = uefi_call_wrapper(KernelFile->Read, 3, KernelFile, &ReadSize, KernelBuffer);
+    if (EFI_ERROR(Status) || ReadSize != KernelSize)
+    {
+        uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, L"Failed to read complete kernel!\r\n");
+
+        while (1)
+        {
+            __asm__ __volatile__("hlt");
+        }
+    }
+
+    // Verify that the loaded file has the ELF's signature
+    UINT8* KernelBytes = (UINT8*)KernelBuffer;
+    if(KernelBytes[0] != 0x7F || KernelBytes[1] != 'E'  || KernelBytes[2] != 'L'  ||KernelBytes[3] != 'F')
+    {
+        uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, L"Invalid ELF file!\r\n");
+
+        while (1)
+        {
+            __asm__ __volatile__("hlt");
+        }
+    }
+    uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, L"\nSuccessfully loaded kernel.elf!\r\n");
 
     // waitttt
     while (1)

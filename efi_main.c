@@ -78,6 +78,79 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable
     
     uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, L"\nSuccessfully opened filesystem!\r\n");
 
+    // Open kernel.elf
+    EFI_FILE_HANDLE KernelFile = NULL;
+    Status = uefi_call_wrapper(Root->Open, 5, Root, &KernelFile, L"kernel.elf", EFI_FILE_MODE_READ, 0);
+    if (EFI_ERROR(Status))
+    {
+        uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, L"Failed to open kernel.elf!\r\n");
+
+        while (1)
+        {
+            __asm__ __volatile__("hlt");
+        }
+    }
+    uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, L"\nSuccessfully opened kernel.elf!\r\n");
+
+    // Figure out the size of the file
+    EFI_GUID FileInfoGuid = EFI_FILE_INFO_ID;
+
+    // We dont know the size of kernel.elf
+    UINTN FileInfoSize = 0;
+
+    // Ask UEFI how large the information buffer needs to be
+    // Passing NULL as the buffer makes UEFI report the required size
+    Status = uefi_call_wrapper(KernelFile->GetInfo, 4, KernelFile, &FileInfoGuid, &FileInfoSize, NULL);
+    if(Status != EFI_BUFFER_TOO_SMALL)
+    {
+        uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, L"Failed to determine file info buffer!\r\n");
+
+        while (1)
+        {
+            __asm__ __volatile__("hlt");
+        }
+    }
+
+    // FileInfoSize contains the size to allocate, we will use AllocatePool() from the boot services
+    EFI_FILE_INFO* FileInfo = NULL;
+    Status = uefi_call_wrapper(SystemTable->BootServices->AllocatePool, 3, EfiLoaderData, FileInfoSize, (VOID**)&FileInfo);
+    if (EFI_ERROR(Status))
+    {
+        uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, L"Failed to allocate file into buffer\r\n");
+
+        while (1)
+        {
+            __asm__ __volatile__("hlt");
+        }
+    }
+
+    // Now we can get the info
+    Status = uefi_call_wrapper(KernelFile->GetInfo, 4, KernelFile, &FileInfoGuid, &FileInfoSize, FileInfo);
+    if (EFI_ERROR(Status))
+    {
+        uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, L"Failed to retrieve file information!\r\n");
+
+        while (1)
+        {
+            __asm__ __volatile__("hlt");
+        }
+    }
+    // Retrieve the size
+    UINT64 KernelSize = FileInfo->FileSize;
+
+    // Format it
+    CHAR16 kernelSizeString[21];
+    uint64ToChar16(KernelSize, kernelSizeString);
+
+    uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, L"Kernel size: ");
+    uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, kernelSizeString);
+    uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, L" Bytes\r\n");
+
+
+    // Free allocated memory
+    uefi_call_wrapper(SystemTable->BootServices->FreePool, 1, FileInfo);
+
+
     // waitttt
     while (1)
     {

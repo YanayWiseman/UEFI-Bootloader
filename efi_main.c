@@ -182,12 +182,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable
     uint64ToChar16(ElfHeader->e_phoff, ProgramHeaderOffsetString);
     uint64ToChar16(ElfHeader->e_phnum, ProgramHeaderCountString);
 
-    uefi_call_wrapper(
-        SystemTable->ConOut->OutputString,
-        2,
-        SystemTable->ConOut,
-        L"ELF header parsed successfully!\r\n"
-    );
+    uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, L"ELF header parsed successfully!\r\n");
 
     uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, L"Entry point: ");
     uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, EntryPointString);
@@ -199,6 +194,125 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable
     uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, ProgramHeaderCountString);
 
     uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, L"\r\n");
+
+    // Verify that the program header entries have the expected size.
+    if(ElfHeader->e_phentsize != sizeof(Elf64_Phdr))
+    {
+        Fail(SystemTable, L"Invalid program header size\r\n");
+    }
+
+    // Ensure that program headers exist
+    if(ElfHeader->e_phnum == 0)
+    {
+        Fail(SystemTable, L"Couldn't find ELF header's number of segments!\r\n");
+    }
+
+    // Ensure that the program header table fits inside the ELF file
+    // Division avoids integer overflow in the size calculation.
+    if (ElfHeader->e_phoff > KernelSize || ElfHeader->e_phnum > (KernelSize - ElfHeader->e_phoff) / ElfHeader->e_phentsize)
+    {
+        Fail(SystemTable, L"Program header table exceeds ELF file bounds!\r\n");
+    }
+
+    // Calc the adress of the program header table inside the ELF buffer
+    Elf64_Phdr* ProgramHeaders = (Elf64_Phdr*)((UINT8*)KernelBuffer + ElfHeader->e_phoff);
+
+    // Find the complete memory range required by all PT_LOAD segments.
+    UINT64 MinAddress = ~((UINT64)0);
+    UINT64 MaxAddress = 0;
+
+    // Iterate over all of the program hedaers
+    for(UINT16 i = 0; i < ElfHeader->e_phnum; i++)
+    {
+        // Only load specific type of segments
+        if(ProgramHeaders->p_type == PT_LOAD && ProgramHeaders->p_memsz > 0)
+        {
+            // Ensure the segment's memory size is large enough.
+            if (ProgramHeaders->p_memsz < ProgramHeaders->p_filesz)
+            {
+                Fail(SystemTable, L"Segment memory size is smaller than file size!\r\n");
+            }
+
+            // Ensure the segment's file data is inside KernelBuffer.
+            if (ProgramHeaders->p_offset > KernelSize || ProgramHeaders->p_filesz > KernelSize - ProgramHeaders->p_offset)
+            {
+                Fail(SystemTable, L"Segment exceeds ELF file bounds!\r\n");
+            }
+
+            // Ensure the virtual address range doesn't overflow.
+            if (ProgramHeaders->p_memsz > ~((UINT64)0) - ProgramHeaders->p_vaddr)
+            {
+                Fail(SystemTable, L"Segment address overflow!\r\n");
+            }
+
+            UINT64 SegmentStart = ProgramHeaders->p_vaddr;
+            UINT64 SegmentEnd = SegmentStart + ProgramHeaders->p_memsz;
+
+            // Align the segment boundaries to 4 KiB pages.
+            UINT64 PageStart = SegmentStart & ~((UINT64)EFI_PAGE_SIZE - 1);
+
+            if (SegmentEnd > ~((UINT64)0) - (EFI_PAGE_SIZE - 1))
+            {
+                Fail(SystemTable, L"Segment alignment overflow!\r\n");
+            }
+
+            UINT64 PageEnd = (SegmentEnd + EFI_PAGE_SIZE - 1) & ~((UINT64)EFI_PAGE_SIZE - 1);
+
+            if (PageStart < MinAddress)
+            {
+                MinAddress = PageStart;
+            }
+
+            if (PageEnd > MaxAddress)
+            {
+                MaxAddress = PageEnd;
+            }
+        }
+
+        // Go to the header
+        ProgramHeaders++;
+    }
+
+    // Ensure we found at least one loadable segment
+    if (MinAddress == ~((UINT64)0) || MaxAddress <= MinAddress)
+    {
+        Fail(SystemTable, L"No valid loadable segments found!\r\n");
+    }
+
+    // Calculate the required allocation size.
+    UINT64 AllocationSize = MaxAddress - MinAddress;
+
+    // Calculate the number of 4 KiB pages required.
+    UINTN Pages = (UINTN)(AllocationSize / EFI_PAGE_SIZE);
+
+    // Request memory at the exact physical address.
+    EFI_PHYSICAL_ADDRESS AllocationAddress = MinAddress;
+
+    Status = uefi_call_wrapper(SystemTable->BootServices->AllocatePages, 4, AllocateAddress, EfiLoaderData, Pages, &AllocationAddress);
+    if (EFI_ERROR(Status))
+    {
+        Fail(SystemTable, L"Failed to allocate kernel memory!\r\n");
+    }
+    
+    // Clear the entire allocated region
+    // This also takes care of the zero initialized parts of segments
+    SetMem((VOID*)(UINTN)MinAddress, (UINTN)AllocationSize, 0);
+
+    // Reset the program header pointer
+    ProgramHeaders = (Elf64_Phdr*)((UINT8*)KernelBuffer + ElfHeader->e_phoff);
+
+    // Iterate over all program headers again
+    for (UINT16 i = 0; i < ElfHeader->e_phnum; i++)
+    {
+        if (ProgramHeaders->p_type == PT_LOAD)
+        {
+            // Copy the segment's file contents to its destination.
+            CopyMem((VOID*)(UINTN)ProgramHeaders->p_vaddr, (UINT8*)KernelBuffer + ProgramHeaders->p_offset, (UINTN)ProgramHeaders->p_filesz);
+        }
+        ProgramHeaders++;
+    }
+
+    uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, L"Kernel segments loaded successfully!\r\n");
 
     // waitttt
     while (1)

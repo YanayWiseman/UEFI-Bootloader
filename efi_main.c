@@ -239,13 +239,13 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable
                 Fail(SystemTable, L"Segment exceeds ELF file bounds!\r\n");
             }
 
-            // Ensure the virtual address range doesn't overflow.
-            if (ProgramHeaders->p_memsz > ~((UINT64)0) - ProgramHeaders->p_vaddr)
+            // Ensure the virtual adSdress range doesn't overflow.
+            if (ProgramHeaders->p_memsz > ~((UINT64)0) - ProgramHeaders->p_paddr)
             {
-                Fail(SystemTable, L"Segment address overflow!\r\n");
+                Fail(SystemTable, L"Physical segment address overflow!\r\n");
             }
 
-            UINT64 SegmentStart = ProgramHeaders->p_vaddr;
+            UINT64 SegmentStart = ProgramHeaders->p_paddr;
             UINT64 SegmentEnd = SegmentStart + ProgramHeaders->p_memsz;
 
             // Align the segment boundaries to 4 KiB pages.
@@ -307,7 +307,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable
         if (ProgramHeaders->p_type == PT_LOAD)
         {
             // Copy the segment's file contents to its destination.
-            CopyMem((VOID*)(UINTN)ProgramHeaders->p_vaddr, (UINT8*)KernelBuffer + ProgramHeaders->p_offset, (UINTN)ProgramHeaders->p_filesz);
+            CopyMem((VOID*)(UINTN)ProgramHeaders->p_paddr, (UINT8*)KernelBuffer + ProgramHeaders->p_offset, (UINTN)ProgramHeaders->p_filesz);
         }
         ProgramHeaders++;
     }

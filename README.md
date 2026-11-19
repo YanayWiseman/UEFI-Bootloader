@@ -28,7 +28,7 @@ If anything fails along the way, it prints an error and halts.
 ## Requirements
  
 - GCC, binutils
-- [gnu-efi](https://sourceforge.net/projects/gnu-efi/)
+- gnu-efi
 - QEMU
 - OVMF (UEFI firmware for QEMU)
 On Debian/Ubuntu:
@@ -41,7 +41,7 @@ sudo apt install build-essential gnu-efi qemu-system-x86 ovmf
  
 Bootloader (the flags are the ones listed in the comment above efi_main):
 
-gcc \    
+gcc \   
     -I/usr/include/efi \
     -I/usr/include/efi/x86_64 \
     -fpic \                         
@@ -79,6 +79,8 @@ objcopy \
     -I elf64-x86-64 \
     -O efi-app-x86_64 \
     bootloader.so BOOTX64.EFI
+
+Make sure that there are no spaces after the \ character when compiling and linking.
 
 cp BOOTX64.EFI esp/EFI/BOOT/BOOTX64.EFI && qemu-system-x86_64 -machine q35 -m 512M -drive if=pflash,format=raw,readonly=on,file=/usr/share/OVMF/OVMF_CODE_4M.fd -drive if=pflash,format=raw,file=OVMF_VARS_4M.fd -drive format=raw,file=fat:rw:esp  
 

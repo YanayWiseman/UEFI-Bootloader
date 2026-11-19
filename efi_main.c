@@ -7,6 +7,16 @@ void Fail(EFI_SYSTEM_TABLE* SystemTable, CHAR16* Message);
 void Halt(void);
 BOOLEAN IsElf(VOID* Buffer, UINT64 BufferSize);
 
+#define PAGE_PRESENT  0x001
+#define PAGE_WRITABLE 0x002
+#define PAGE_LARGE    0x080
+
+#define MAX_IDENTITY_ADDRESS 0x100000000ULL
+
+__attribute__((noreturn))
+void JumpToKernel(UINT64 PageTableAddress, UINT64 StackTop, UINT64 EntryPoint);
+EFI_STATUS ExitBootServicesAndGetMap(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable);
+
 /*
     Main function for the UEFI Bootloader, defined as efi_main to invoke the entry point specidief by the EFI executable.
     EFI_HANDLE is the ID of the UEFI executable, SystemTable points to EFI_SYSTEM_TABLE which is a struct containing a lot
@@ -21,6 +31,7 @@ BOOLEAN IsElf(VOID* Buffer, UINT64 BufferSize);
     -mno-red-zone - we cant assume that the firmware gives the same redzone behviour we expect
     -maccumulate-outgoing-args - changes how gcc reserves stack space for outgoing function arguments.
 */
+
 EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable)
 {
     // Initialize the UEFI libraries using the parameters
@@ -314,13 +325,172 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable
 
     uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, L"Kernel segments loaded successfully!\r\n");
 
-    // waitttt
-    while (1)
+    // The kernel is linked at a low physical address
+    // This first implementation identity maps only the first 4 GB
+    if (MaxAddress > MAX_IDENTITY_ADDRESS || ElfHeader->e_entry >= MAX_IDENTITY_ADDRESS)
     {
-        __asm__ __volatile__("hlt");
+        Fail(SystemTable, L"Kernel is outside the supported 4 GB range!\r\n");
     }
 
+    // Allocate six contiguous pages for our page tables:
+    // 1 PML4, 1 PDPT, and 4 page directories
+    EFI_PHYSICAL_ADDRESS PageTablesAddress = 0;
+
+    Status = uefi_call_wrapper(SystemTable->BootServices->AllocatePages, 4, AllocateAnyPages, EfiLoaderData, 6, &PageTablesAddress);
+
+    if (EFI_ERROR(Status) || PageTablesAddress + 6 * EFI_PAGE_SIZE > MAX_IDENTITY_ADDRESS)
+    {
+        Fail(SystemTable, L"Failed to allocate page tables below 4 GB!\r\n");
+    }
+
+    SetMem((VOID*)(UINTN)PageTablesAddress, 6 * EFI_PAGE_SIZE, 0);
+
+    UINT64* PML4 = (UINT64*)(UINTN)PageTablesAddress;
+    UINT64* PDPT = (UINT64*)(UINTN)(PageTablesAddress + EFI_PAGE_SIZE);
+
+    // Connect PML4 entry 0 to the PDPT
+    PML4[0] = PageTablesAddress + EFI_PAGE_SIZE | PAGE_PRESENT | PAGE_WRITABLE;
+
+    // Connect four PDPT entries to four page directories
+    // Each page directory maps 1 GiB using 2 MB pages
+    for (UINT64 i = 0; i < 4; i++)
+    {
+        UINT64 PageDirectoryAddress = PageTablesAddress + (2 + i) * EFI_PAGE_SIZE;
+
+        PDPT[i] = PageDirectoryAddress | PAGE_PRESENT | PAGE_WRITABLE;
+
+        UINT64* PageDirectory = (UINT64*)(UINTN)PageDirectoryAddress;
+
+        for (UINT64 j = 0; j < 512; j++)
+        {
+            UINT64 PhysicalAddress = (i * 512 + j) * 0x200000;
+            PageDirectory[j] = PhysicalAddress | PAGE_PRESENT | PAGE_WRITABLE | PAGE_LARGE;
+        }
+    }
+
+    uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, L"Identity page tables created!\r\n");
+
+    // Allocate a separate 64 KB kernel stack
+    EFI_PHYSICAL_ADDRESS StackAddress = 0;
+
+    Status = uefi_call_wrapper(SystemTable->BootServices->AllocatePages, 4, AllocateAnyPages, EfiLoaderData, 16, &StackAddress);
+
+    if (EFI_ERROR(Status) || StackAddress + 16 * EFI_PAGE_SIZE > MAX_IDENTITY_ADDRESS)
+    {
+        Fail(SystemTable, L"Failed to allocate kernel stack below 4 GiB!\r\n");
+    }
+
+    UINT64 StackTop = StackAddress + 16 * EFI_PAGE_SIZE;  // The stack grows downwards
+
+    uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, L"Kernel stack allocated!\r\n");
+
+    uefi_call_wrapper(SystemTable->ConOut->OutputString, 2, SystemTable->ConOut, L"Exiting UEFI boot services...\r\n");
+
+    // This must be our last UEFI boot services operation
+    // UEFI's memory allocator, console text output (ConOut), file system protocols, and watchdog timers are destroyed
+    // Calling SystemTable->ConOut->OutputString after this line will crash the machine
+    Status = ExitBootServicesAndGetMap(ImageHandle, SystemTable);
+    if (EFI_ERROR(Status))
+    {
+        // Boot services may still be available if ExitBootServices failed
+        Fail(SystemTable, L"ExitBootServices failed!\r\n");
+    }
+
+    // No UEFI calls after this point
+    // Switch page tables and stack, then jump to kernel_main
+    JumpToKernel(PageTablesAddress, StackTop, ElfHeader->e_entry);
+
     return EFI_SUCCESS;
+}
+
+/*
+    Function gets the final UEFI memory map and exit boot services.
+    The map is retrieved immediately before ExitBootServices because allocations and other boot service calls can change its map key.
+    input: The image handle and system table (efi_main params)
+    Output: EFI_STATUS representing succuss of the function
+*/
+
+EFI_STATUS ExitBootServicesAndGetMap(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable)
+{
+    UINTN MapSize = 0;
+    UINTN MapKey = 0;
+    UINTN DescriptorSize = 0;
+    UINT32 DescriptorVersion = 0;
+
+    // Since we don't know how many memory regions are there, we intentionally fail the following funciton with EFI_BUFFER_TOO_SMALL
+    // Then it writes the actual values into MapSize, MapKey, DescriptorSize and DescriptorVersion
+    EFI_STATUS Status = uefi_call_wrapper(SystemTable->BootServices->GetMemoryMap, 5, &MapSize, NULL, &MapKey, &DescriptorSize, &DescriptorVersion);
+    if (Status != EFI_BUFFER_TOO_SMALL || DescriptorSize == 0)
+    {
+        return EFI_LOAD_ERROR;
+    }
+
+    // Leave room for additional descriptors
+    UINTN MapCapacity = MapSize + DescriptorSize * 32;
+
+    EFI_MEMORY_DESCRIPTOR* MemoryMap = NULL;
+
+    Status = uefi_call_wrapper(SystemTable->BootServices->AllocatePool, 3, EfiLoaderData, MapCapacity, (VOID**)&MemoryMap);
+    if (EFI_ERROR(Status))
+    {
+        return Status;
+    }
+
+    // Retry if the memory map changes before ExitBootServices
+    for (UINTN Attempt = 0; Attempt < 5; Attempt++)
+    {
+        // ensure UEFI always knows the full capacity of the buffer
+        MapSize = MapCapacity;
+
+        Status = uefi_call_wrapper(SystemTable->BootServices->GetMemoryMap, 5, &MapSize, MemoryMap, &MapKey, &DescriptorSize, &DescriptorVersion);
+        if (EFI_ERROR(Status))
+        {
+            return Status;
+        }
+
+        Status = uefi_call_wrapper(SystemTable->BootServices->ExitBootServices, 2, ImageHandle, MapKey);
+        if (!EFI_ERROR(Status))
+        {
+            return EFI_SUCCESS;
+        }
+
+        if (Status != EFI_INVALID_PARAMETER)
+        {
+            return Status;
+        }
+    }
+
+    return EFI_ABORTED;
+}
+
+
+/*
+    Function to witch to our own page tables and stack, then jump to the kernel.
+    This function will not jump back to where it was called from.
+    The page tables identity map the first 4 GB, so the kernel's physical address is also its virtual address.
+    Input: The page tables address, the stack top and the entry point.
+    Output: no return values
+*/
+
+__attribute__((noreturn))
+void JumpToKernel(UINT64 PageTableAddress, UINT64 StackTop, UINT64 EntryPoint)
+{
+    __asm__ __volatile__
+    (
+        "cli\n"
+        "mov %0, %%cr3\n"  // Set the control register to out PML4 physical address
+        "mov %1, %%rsp\n"  // Set the stack pointer
+        "andq $-16, %%rsp\n"  // Align rsp down to a 16 bit boundary
+        "subq $8, %%rsp\n"  // Fake the stack alignment of a call instruction so instructions in kernel_main don't trigger a General Protection Fault
+        "xorq %%rbp, %%rbp\n"
+        "cld\n"  // DF must be 0 before entering any C function
+        "jmp *%2\n"  // jump to EntryPoint
+        :
+        : "r"(PageTableAddress), "r"(StackTop), "r"(EntryPoint)  
+        : "memory"
+    );
+
+    __builtin_unreachable();  // Trigger UB if executable reaches this
 }
 
 /*
@@ -329,6 +499,7 @@ EFI_STATUS EFIAPI efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE* SystemTable
     Input: no input values
     Output: No return values
 */
+
 void Halt(void)
 {
     while (1)
